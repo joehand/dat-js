@@ -1,5 +1,6 @@
 const EventEmitter = require('events').EventEmitter
-const Signalhub = require('signalhubws')
+const SignalhubWS = require('signalhubws')
+const Signalhub = require('signalhub')
 const hyperdrive = require('hyperdrive')
 const ram = require('random-access-memory')
 const websocket = require('websocket-stream')
@@ -58,7 +59,10 @@ class Repo extends EventEmitter {
   _createWebsocket () {
     if(!this.opts.gateway) return
     const servers = [].concat(this.opts.gateway)
+    // console.log('gateways', servers)
+
     const server = chooseRandom(servers)
+    // console.log('server', server)
 
     const url = setSecure(server + '/' + this.archive.key.toString('hex'))
 
@@ -70,7 +74,7 @@ class Repo extends EventEmitter {
       }, DEFAULT_WEBSOCKET_RECONNECT)
     })
 
-    this._replicate(this.websocket)
+    this._replicate(this.websocket, server, 'Websocket')
   }
 
   _startWebsocketTimer () {
@@ -81,12 +85,18 @@ class Repo extends EventEmitter {
   }
 
   _joinWebrtcSwarm () {
-    const hubs = [].concat(this.opts.signalhub || DEFAULT_SIGNALHUBS).map(setSecure)
-
+    var signalhub = null
+    const hubs = [].concat(this.opts.signalhub) //.map(setSecure)
+    const gates = [].concat(this.opts.gateway) //.map(setSecure)
     const appName = this.archive.discoveryKey.toString('hex').slice(40)
 
-    const signalhub = Signalhub(appName, hubs)
-
+    // console.log('hubs', hubs)
+    // console.log('gate', gates)
+    if (!this.opts.signalhub) {
+      signalhub = SignalhubWS(appName, gates)
+    } else {
+      signalhub = Signalhub(appName, hubs)
+    }
     this.signalhub = signalhub
 
     // Listen for incoming connections
@@ -111,15 +121,19 @@ class Repo extends EventEmitter {
     subscription.pipe(processSubscription)
 
     const swarm = new WebrtcSwarm(signalhub)
-
+    if (this.opts.gateway) {
+      const signalws = SignalhubWS(appName, [].concat(this.opts.gateway))
+      const swWs = new WebrtcSwarm(signalws)
+      swWs.on('peer', (stream, id) => this._replicate(stream, id, 'WebRtc'))
+    }
     this.swarm = swarm
 
-    swarm.on('peer', (stream) => this._replicate(stream))
+    swarm.on('peer', (stream, id) => this._replicate(stream, id, 'WebRtc'))
   }
 
-  _replicate (stream) {
+  _replicate (stream, id, type) {
+    this.emit('peer', {id: id, type: type})
     pump(stream, this.archive.replicate({
-      sparse: true,
       live: true
     }), stream)
   }
